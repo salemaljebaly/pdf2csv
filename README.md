@@ -24,7 +24,7 @@ A robust Python tool for extracting structured data from PDF files and convertin
 1. Clone the repository:
 ```bash
 git clone https://github.com/salemaljebaly/pdf2csv.git
-cd pdf-to-csv-converter
+cd pdf2csv
 ```
 
 2. Run the installation script:
