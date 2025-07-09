@@ -32,8 +32,9 @@ cd pdf2csv
 # On Linux/macOS
 ./install.sh
 
-# On Windows
+# On Windows - Not tested yet
 install.bat
+
 ```
 
 ### Method 2: Manual Installation
@@ -176,8 +177,8 @@ The tool can handle various data formats with any number of columns. By default,
 
 ### Example: 3-Column Data (ID, Gender, Age)
 ```
-218915949830 F 21
-218919256808 M 26
+342432 F 21
+889234 M 26
 ```
 
 ### Example: 4-Column Data (Product Info)
