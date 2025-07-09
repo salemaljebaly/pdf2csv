@@ -5,7 +5,7 @@ tqdm==4.66.1
 # PDF processing
 pypdf==3.17.4
 pdfminer.six==20221105
-Pillow==10.2.0
+Pillow==10.3.0
 
 # Character encoding detection
 chardet==5.2.0
