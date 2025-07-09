@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-PDF to CSV Converter
-A robust tool for extracting structured data from PDF files and converting to CSV format.
+PDF to CSV Converter - Optimized version with header skipping
 """
 
 import argparse
@@ -38,18 +37,10 @@ class ExtractionMethod(Enum):
 class DataRecord:
     """Data structure for extracted records"""
     values: List[str]
-    column_names: Optional[List[str]] = None
-
-    def validate(self) -> bool:
-        """Basic validation - can be customized"""
-        # Basic check: all values should be non-empty
-        return all(val and val.strip() for val in self.values)
     
-    def to_dict(self) -> dict:
-        """Convert to dictionary with column names"""
-        if self.column_names:
-            return dict(zip(self.column_names, self.values))
-        return {f"Column_{i+1}": val for i, val in enumerate(self.values)}
+    def validate(self) -> bool:
+        """Basic validation - all values should be non-empty"""
+        return all(val and val.strip() for val in self.values)
 
 
 class PDFToCSVConverter:
@@ -63,7 +54,8 @@ class PDFToCSVConverter:
                  verbose: bool = False,
                  interactive: bool = False,
                  column_names: Optional[List[str]] = None,
-                 num_columns: Optional[int] = None):
+                 num_columns: Optional[int] = None,
+                 skip_rows: int = 0):
         self.input_path = Path(input_path)
         self.output_path = Path(output_path)
         self.method = method
@@ -71,93 +63,52 @@ class PDFToCSVConverter:
         self.verbose = verbose
         self.interactive = interactive
         self.column_names = column_names or []
-        self.num_columns = num_columns
+        self.num_columns = num_columns or 3
+        self.skip_rows = skip_rows
         
         # Setup logging
-        self._setup_logging()
-        
-        # Statistics
-        self.total_pages = 0
-        self.total_records = 0
-        self.valid_records = 0
-        self.invalid_records = 0
-    
-    def _setup_logging(self):
-        """Configure logging"""
-        log_level = logging.DEBUG if self.verbose else logging.INFO
+        log_level = logging.DEBUG if verbose else logging.INFO
         logging.basicConfig(
             level=log_level,
             format='%(asctime)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
         self.logger = logging.getLogger(__name__)
+        
+        # Statistics
+        self.total_records = 0
+        self.valid_records = 0
+        self.invalid_records = 0
+        self.rows_skipped = 0
     
     def detect_columns(self, text: str) -> int:
         """Detect number of columns in the data"""
-        # Split into lines and tokens
         lines = text.strip().split('\n')
-        all_tokens = []
         
-        # Collect tokens from first few lines
-        for line in lines[:50]:  # Look at first 50 lines
-            tokens = line.strip().split()
-            if tokens:
-                all_tokens.extend(tokens)
+        # Skip header lines if they contain Arabic or non-data patterns
+        data_lines = []
+        for line in lines:
+            # Skip lines that appear to be headers (contain Arabic, stars, etc.)
+            if not any(ord(c) > 1536 for c in line) and not line.startswith('*'):
+                tokens = line.strip().split()
+                if tokens:
+                    data_lines.append(tokens)
         
-        if not all_tokens:
-            return 3  # Default
+        if not data_lines:
+            return 3
         
-        # Method 1: Try to find a repeating pattern
-        # For data like: ID Gender Age ID Gender Age...
-        for num_cols in range(2, 11):
-            if len(all_tokens) < num_cols * 3:  # Need at least 3 full records
-                continue
-                
-            # Check if pattern repeats
-            pattern_matches = True
-            for i in range(num_cols):
-                # Check if every num_cols position has similar type
-                first_token = all_tokens[i]
-                
-                # Sample a few positions
-                for j in range(1, min(5, len(all_tokens) // num_cols)):
-                    idx = i + (j * num_cols)
-                    if idx >= len(all_tokens):
-                        break
-                    
-                    # Basic type checking
-                    token = all_tokens[idx]
-                    if (first_token.isdigit() != token.isdigit() and 
-                        first_token.isalpha() != token.isalpha()):
-                        pattern_matches = False
-                        break
-                
-                if not pattern_matches:
-                    break
-            
-            if pattern_matches:
-                self.logger.info(f"Detected {num_cols} columns based on pattern analysis")
-                return num_cols
+        # Count most common number of tokens per line
+        token_counts = {}
+        for tokens in data_lines[:20]:  # Sample first 20 data lines
+            count = len(tokens)
+            if 2 <= count <= 10:  # Reasonable column range
+                token_counts[count] = token_counts.get(count, 0) + 1
         
-        # Method 2: Look for newline patterns (original format)
-        # Count unique line lengths
-        line_lengths = {}
-        for line in lines[:100]:
-            tokens = line.strip().split()
-            if tokens:
-                length = len(tokens)
-                line_lengths[length] = line_lengths.get(length, 0) + 1
+        if token_counts:
+            # Return most common count
+            return max(token_counts, key=token_counts.get)
         
-        # Most common line length might indicate columns per line
-        if line_lengths:
-            most_common_length = max(line_lengths, key=line_lengths.get)
-            if most_common_length in range(2, 11):
-                self.logger.info(f"Detected {most_common_length} columns based on line analysis")
-                return most_common_length
-        
-        # Method 3: Ask user if detection fails
-        self.logger.warning("Column detection uncertain, defaulting to 3")
-        return 3
+        return 3  # Default
     
     def get_column_names_interactive(self, num_columns: int) -> List[str]:
         """Interactively get column names from user"""
@@ -167,101 +118,67 @@ class PDFToCSVConverter:
         column_names = []
         for i in range(num_columns):
             name = input(f"  Column {i+1} name: ").strip()
-            if not name:
-                name = f"Column_{i+1}"
-            column_names.append(name)
+            column_names.append(name or f"Column_{i+1}")
         
         print("\nColumn names set to:", ", ".join(column_names))
-        confirm = input("Confirm? (y/n): ").lower()
-        
-        if confirm != 'y':
+        if input("Confirm? (y/n): ").lower() != 'y':
             return self.get_column_names_interactive(num_columns)
         
         return column_names
     
-    def extract_structured_data(self, text: str) -> List[DataRecord]:
-        """Extract data assuming structured format"""
-        records = []
-        tokens = text.split()
-        
-        if not self.num_columns:
-            return records
-        
-        i = 0
-        while i + self.num_columns <= len(tokens):
-            # Extract values for one record
-            values = tokens[i:i + self.num_columns]
-            
-            record = DataRecord(
-                values=values,
-                column_names=self.column_names
-            )
-            
-            if not self.validate or record.validate():
-                records.append(record)
-                self.valid_records += 1
-            else:
-                self.invalid_records += 1
-                if self.verbose:
-                    self.logger.warning(f"Invalid record: {values}")
-            
-            i += self.num_columns
-        
-        return records
-    
-    def extract_regex_data(self, text: str) -> List[DataRecord]:
-        """Extract data using regex patterns - general approach"""
+    def extract_data(self, text: str) -> List[DataRecord]:
+        """Extract data from text - unified method"""
         records = []
         
-        if not self.num_columns:
-            return records
-        
-        # Build a general pattern based on number of columns
-        # This pattern looks for groups of non-whitespace tokens
-        pattern_parts = [r'(\S+)' for _ in range(self.num_columns)]
-        pattern = re.compile(r'\s*'.join(pattern_parts))
-        
-        matches = pattern.findall(text)
-        
-        for match in matches:
-            values = list(match)
+        if self.method == ExtractionMethod.REGEX:
+            # Regex pattern for space-separated values
+            pattern = re.compile(r'\s*'.join([r'(\S+)' for _ in range(self.num_columns)]))
+            matches = pattern.findall(text)
             
-            record = DataRecord(
-                values=values,
-                column_names=self.column_names
-            )
-            
-            if not self.validate or record.validate():
-                records.append(record)
-                self.valid_records += 1
-            else:
-                self.invalid_records += 1
-                if self.verbose:
-                    self.logger.warning(f"Invalid record: {values}")
-        
-        return records
-    
-    def extract_table_data(self, page) -> List[DataRecord]:
-        """Extract data from tables in the page"""
-        records = []
-        tables = page.extract_tables()
-        
-        for table in tables:
-            for row in table:
-                if len(row) >= self.num_columns:
-                    # Extract values based on number of columns
-                    values = [str(row[i]).strip() for i in range(self.num_columns)]
+            for i, match in enumerate(matches):
+                # Skip first N matches if skip_rows is set
+                if i < self.skip_rows:
+                    self.rows_skipped += 1
+                    continue
                     
-                    record = DataRecord(
-                        values=values,
-                        column_names=self.column_names
-                    )
-                    
-                    if not self.validate or record.validate():
-                        records.append(record)
-                        self.valid_records += 1
+                record = DataRecord(values=list(match))
+                if not self.validate or record.validate():
+                    records.append(record)
+                    self.valid_records += 1
+                else:
+                    self.invalid_records += 1
+        else:
+            # Token-based extraction
+            tokens = text.split()
+            
+            # Skip tokens that are likely headers (Arabic text)
+            start_idx = 0
+            if self.skip_rows > 0:
+                # Skip first N records worth of tokens
+                skip_tokens = self.skip_rows * self.num_columns
+                while start_idx < len(tokens) and skip_tokens > 0:
+                    # Skip Arabic tokens
+                    if any(ord(c) > 1536 for c in tokens[start_idx]):
+                        start_idx += 1
                     else:
-                        self.invalid_records += 1
+                        start_idx += 1
+                        skip_tokens -= 1
+                self.rows_skipped = self.skip_rows
+            
+            # Extract records
+            for i in range(start_idx, len(tokens) - self.num_columns + 1, self.num_columns):
+                values = tokens[i:i + self.num_columns]
+                
+                # Skip if values contain Arabic text
+                if any(any(ord(c) > 1536 for c in val) for val in values):
+                    continue
+                
+                record = DataRecord(values=values)
+                if not self.validate or record.validate():
+                    records.append(record)
+                    self.valid_records += 1
+                else:
+                    self.invalid_records += 1
         
         return records
     
@@ -270,23 +187,30 @@ class PDFToCSVConverter:
         records = []
         
         if self.method == ExtractionMethod.TABLE:
-            records = self.extract_table_data(page)
+            tables = page.extract_tables()
+            for table in tables:
+                for i, row in enumerate(table):
+                    if i < self.skip_rows:
+                        self.rows_skipped += 1
+                        continue
+                        
+                    if len(row) >= self.num_columns:
+                        values = [str(row[j]).strip() for j in range(self.num_columns)]
+                        
+                        # Skip if contains Arabic
+                        if any(any(ord(c) > 1536 for c in val) for val in values):
+                            continue
+                            
+                        record = DataRecord(values=values)
+                        if not self.validate or record.validate():
+                            records.append(record)
+                            self.valid_records += 1
+                        else:
+                            self.invalid_records += 1
         else:
             text = page.extract_text()
-            if not text:
-                self.logger.warning(f"No text found on page {page.page_number}")
-                return records
-            
-            if self.method == ExtractionMethod.STRUCTURED:
-                records = self.extract_structured_data(text)
-            elif self.method == ExtractionMethod.REGEX:
-                records = self.extract_regex_data(text)
-            else:  # AUTO mode
-                # Try regex first for space-separated data
-                records = self.extract_regex_data(text)
-                if len(records) == 0:  # If no results, try structured
-                    self.logger.info("No records found with regex, trying structured extraction")
-                    records = self.extract_structured_data(text)
+            if text:
+                records = self.extract_data(text)
         
         return records
     
@@ -299,43 +223,36 @@ class PDFToCSVConverter:
                 self.total_pages = len(pdf.pages)
                 self.logger.info(f"Processing {self.total_pages} pages")
                 
-                # If interactive mode, detect columns and get names
+                # Interactive mode for column detection
                 if self.interactive and not self.column_names:
-                    # Sample first page to detect structure
                     if pdf.pages:
                         sample_text = pdf.pages[0].extract_text()
                         if sample_text:
                             print("\nAnalyzing PDF structure...")
                             detected_cols = self.detect_columns(sample_text)
                             
-                            # Allow user to override detection
                             print(f"\nDetected {detected_cols} columns in your data.")
-                            user_input = input(f"Press Enter to accept, or type the correct number of columns: ").strip()
+                            user_input = input("Press Enter to accept, or type the correct number: ").strip()
                             
-                            if user_input.isdigit():
-                                self.num_columns = int(user_input)
-                            else:
-                                self.num_columns = detected_cols
-                            
+                            self.num_columns = int(user_input) if user_input.isdigit() else detected_cols
                             self.column_names = self.get_column_names_interactive(self.num_columns)
                 
                 # Set default column names if not provided
-                if not self.column_names and self.num_columns:
+                if not self.column_names:
                     self.column_names = [f"Column_{i+1}" for i in range(self.num_columns)]
-                elif not self.num_columns:
-                    self.num_columns = 3  # Default
-                    self.column_names = ["Column_1", "Column_2", "Column_3"]
                 
+                # Process PDF
                 with open(self.output_path, 'w', newline='', encoding='utf-8') as csvfile:
                     writer = csv.writer(csvfile)
                     writer.writerow(self.column_names)
                     
-                    # Process pages with progress bar if available
-                    pages = pdf.pages
-                    if tqdm:
-                        pages = tqdm(pages, desc="Processing pages", unit="page")
+                    pages = tqdm(pdf.pages, desc="Processing pages", unit="page") if tqdm else pdf.pages
                     
-                    for page in pages:
+                    for page_num, page in enumerate(pages):
+                        # Only skip rows on first page
+                        if page_num > 0:
+                            self.skip_rows = 0
+                            
                         records = self.process_page(page)
                         for record in records:
                             writer.writerow(record.values)
@@ -345,6 +262,8 @@ class PDFToCSVConverter:
                 self.logger.info(f"Total records: {self.total_records}")
                 self.logger.info(f"Valid records: {self.valid_records}")
                 self.logger.info(f"Invalid records: {self.invalid_records}")
+                if self.rows_skipped > 0:
+                    self.logger.info(f"Rows skipped: {self.rows_skipped}")
                 
                 return self.total_records, self.valid_records
                 
@@ -362,8 +281,8 @@ def main():
 Examples:
   %(prog)s input.pdf output.csv
   %(prog)s -i input.pdf output.csv  # Interactive mode
+  %(prog)s -c 3 --skip 1 input.pdf output.csv  # Skip first row
   %(prog)s -c 4 --columns "ID,Name,Age,City" input.pdf output.csv
-  %(prog)s -m regex -v large_file.pdf data.csv
         """
     )
     
@@ -371,7 +290,6 @@ Examples:
     parser.add_argument('output', help='Output CSV file path')
     
     parser.add_argument('-m', '--method', 
-                        type=str,
                         choices=['auto', 'structured', 'regex', 'table'],
                         default='auto',
                         help='Extraction method (default: auto)')
@@ -386,7 +304,12 @@ Examples:
     
     parser.add_argument('--columns',
                         type=str,
-                        help='Comma-separated column names (e.g., "ID,Name,Age")')
+                        help='Comma-separated column names')
+    
+    parser.add_argument('--skip',
+                        type=int,
+                        default=0,
+                        help='Number of rows to skip at start (default: 0)')
     
     parser.add_argument('--no-validate', 
                         action='store_true',
@@ -398,26 +321,19 @@ Examples:
     
     parser.add_argument('--version', 
                         action='version',
-                        version='%(prog)s 1.0.0')
+                        version='%(prog)s 1.1.0')
     
     args = parser.parse_args()
     
-    # Validate input file exists
+    # Validate input
     if not Path(args.input).exists():
         print(f"Error: Input file '{args.input}' not found")
         sys.exit(1)
     
-    # Create output directory if needed
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Parse column names if provided
+    # Parse column names
     column_names = None
     if args.columns:
         column_names = [col.strip() for col in args.columns.split(',')]
-        if args.num_columns and len(column_names) != args.num_columns:
-            print(f"Error: Number of column names ({len(column_names)}) doesn't match --num-columns ({args.num_columns})")
-            sys.exit(1)
     
     # Run conversion
     try:
@@ -429,7 +345,8 @@ Examples:
             verbose=args.verbose,
             interactive=args.interactive,
             column_names=column_names,
-            num_columns=args.num_columns
+            num_columns=args.num_columns,
+            skip_rows=args.skip
         )
         
         total, valid = converter.convert()
