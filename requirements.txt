@@ -1,6 +1,6 @@
 # Core dependencies
 pdfplumber==0.10.3
-tqdm==4.66.1
+tqdm==4.66.3
 
 # PDF processing
 pypdf==3.17.4
